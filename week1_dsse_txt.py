@@ -16,7 +16,7 @@ def generate_key():
     return get_random_bytes(8)
 
 key = generate_key()
-print("Generated DES Key:", key)
+# print("Generated DES Key:", key)
 
 key = "b'\xa9\x89\xa4\x13\x94\xf6\xe7H'"
 

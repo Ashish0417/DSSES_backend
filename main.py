@@ -65,8 +65,8 @@ async def upload_and_encrypt(file: UploadFile = File(...),db: Session = Depends(
 
     for e_word in encrypted_words:
         db.execute(
-            text("INSERT INTO encrypted_index (user_id, keyword, file_id) VALUES (:user_id, :keyword, :file_id)"),
-            {"user_id" : 1, "keyword": e_word, "file_id" : file_id}
+            text("INSERT INTO encrypted_index (keyword, file_id) VALUES (:keyword, :file_id)"),
+            {"keyword": e_word, "file_id" : file_id}
         )
         db.commit()
 
