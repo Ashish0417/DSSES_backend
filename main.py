@@ -73,5 +73,32 @@ async def upload_and_encrypt(file: UploadFile = File(...),db: Session = Depends(
     return {"message": "File encrypted & indexed successfully", "filename": file.filename}
 
 
+@app.get("/search/")
+async def search_keyword(keyword: str = Query(...),user_id: int = Query(...),db : Session= Depends(get_db)):
+    encrypt_keyword = generate_search_token(keyword, key)
+    print(encrypt_keyword)
+    matching_files = db.execute(
+        text("SELECT file_id FROM encrypted_index WHERE keyword = :keyword"),
+        {"keyword": "S2rbPvAC/Ew="}
+    ).fetchall()
+
+    if not matching_files:
+        return {"message":"No matches found"}
+    print()
+    print(matching_files)
+    print()
+    file_paths = []
+    for row in matching_files:
+        file_id = row[0]
+        file_path = db.execute(
+            text("SELECT file_path FROM encrypted_files WHERE id = :file_id AND user_id = :user_id"),
+            {"file_id": file_id, "user_id":user_id}
+        ).fetchone()
+
+        if file_path:
+            file_paths.append(file_path[0])
+    print(file_paths)
+
+    return{"file_found":list(file_paths)}
 
 
