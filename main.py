@@ -1,10 +1,25 @@
-from fastapi import FastAPI, File,UploadFile,Query,Depends
+from fastapi import FastAPI, File,UploadFile,Query,Depends, HTTPException, status
 import os
+from fastapi.security import OAuth2PasswordBearer ,OAuth2PasswordRequestForm
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, time, timedelta
 from sqlalchemy import text
+import time
 from sqlalchemy.orm import Session
-from database import SessionLocal
+from database import SessionLocal, User
 from week1_dsse_txt import des_encrypt, des_decrypt, generate_key, tokenize_document, encrypt_keywords, build_index, generate_search_token
+
 app = FastAPI()
+
+SECRET_KEY = "ashish_asmita"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXP_MIN = 30
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+pwd_context = CryptContext(schemes=['bcrypt'],deprecated ="auto")
+
 
 UPLOAD_DIR = "uploads"
 ENCRYPTED_DIR = "encrypted_files"
@@ -15,9 +30,6 @@ key = generate_key()  # Generate DES key
 encrypted_docs = []  # Store encrypted documents
 index = {}  # Store encrypted keyword index
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello Ashish !"}
 
 def get_db():
     db = SessionLocal()
@@ -26,6 +38,64 @@ def get_db():
     finally:
         db.close()
 
+def hash_password(password:str):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password:str,hashed_password:str):
+    return pwd_context.verify(plain_password,hashed_password)
+
+def create_access_token(data:dict, expires_delta: timedelta):
+    to_encode = data.copy()
+    expire = datetime.utcnow()+expires_delta
+    to_encode.update({"exp":expire})
+    return jwt.encode(to_encode,SECRET_KEY, algorithm=ALGORITHM)
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello Ashish !"}
+
+@app.post("/signup/")
+async def signup(email: str,user_name : str, password:str, db:Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail= "Email already registred")
+    
+    shared_key = generate_key().hex()
+    hashed_password = hash_password(password)
+
+    new_user = User(email = email, username = user_name,password = hashed_password,shared_key= shared_key)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)#??
+
+    return {"message": "User registered successfully", "email": email, "shared_key": shared_key}
+
+@app.post("/login/")
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db:Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == form_data.username).first()
+
+    if not user or not verify_password(form_data.password,user.password):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+    
+    acess_token = create_access_token(data = {"sub": user.email},expires_delta=timedelta(minutes= ACCESS_TOKEN_EXP_MIN))
+    return {"access_token":acess_token ,"token_type":"bearer","shared_key":user.shared_key}
+
+
+@app.post("/users/me")
+async def get_current_user_info(token: str = Depends(oauth2_scheme), db:Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid Token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail= "Invalid Token")
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise HTTPException(status_code=401 , detail="User not Exist")
+    
+    return {"email": user.email , "shared_key":user.shared_key}
 @app.post("/upload-text-file/")
 async def upload_etxt_file(file: UploadFile = File(...)):
     file_location = os.path.join(UPLOAD_DIR, file.filename)
