@@ -46,9 +46,9 @@ ENCRYPTED_DIR = "encrypted_files"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(ENCRYPTED_DIR, exist_ok=True)
 
-key = generate_key()  # Generate DES key
-encrypted_docs = []  # Store encrypted documents
-index = {}  # Store encrypted keyword index
+# key = generate_key()  # Generate DES key
+# encrypted_docs = []  # Store encrypted documents
+# index = {}  # Store encrypted keyword index
 
 class SignUpRequest(BaseModel):
     email: str
@@ -134,9 +134,10 @@ async def upload_etxt_file(file: UploadFile = File(...)):
 async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends(get_current_user_info),db: Session = Depends(get_db)):
     file_content = await file.read()
     plain_text = file_content.decode("utf-8")
-
+    key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
+    key = bytes.fromhex(key_hex) 
     encrypted_text = des_encrypt(plain_text, key)
-    encrypted_docs.append(encrypted_text)
+    # encrypted_docs.append(encrypted_text)
 
     # Store the encrypted file
     encrypted_filename = f"encrypted_{file.filename}"
@@ -170,11 +171,13 @@ async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends
 
 @app.get("/search/")
 async def search_keyword(keyword: str = Query(...),user_id :int = Depends(get_current_user_info),db : Session= Depends(get_db)):
+    key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
+    key = bytes.fromhex(key_hex) 
     encrypt_keyword = generate_search_token(keyword, key)
     print(encrypt_keyword)
     matching_files = db.execute(
         text("SELECT file_id FROM encrypted_index WHERE keyword = :keyword"),
-        {"keyword": "S2rbPvAC/Ew="}
+        {"keyword": keyword}
     ).fetchall()
 
     if not matching_files:
@@ -190,7 +193,7 @@ async def search_keyword(keyword: str = Query(...),user_id :int = Depends(get_cu
             {"file_id": file_id, "user_id":user_id}
         ).fetchone()
 
-        if file_path:
+        if file_path: 
             file_paths.append(file_path[0])
     print(file_paths)
 
