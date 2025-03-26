@@ -1,1 +1,0 @@
-pip install bcrypt python-jose[cryptography] passlib

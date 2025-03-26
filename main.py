@@ -1,5 +1,6 @@
-from fastapi import FastAPI, File,UploadFile,Query,Depends, HTTPException, status
+from fastapi import FastAPI, File, Path,UploadFile,Query,Depends, HTTPException, status,Body
 import os
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer ,OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 import time
 from sqlalchemy.orm import Session
-from database import SessionLocal, User
+from database import EncryptedFile, EncryptedIndex, SessionLocal, User
 from week1_dsse_txt import des_encrypt, des_decrypt, generate_key, tokenize_document, encrypt_keywords, build_index, generate_search_token
 
 
@@ -21,10 +22,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this if your frontend runs on a different origin
+    allow_origins=[
+        "http://localhost:5173",  # Vite default port
+        "http://127.0.0.1:5173",  # Alternative localhost
+        "http://localhost:3000",  # Common React port
+        "http://127.0.0.1:3000"   # Alternative localhost
+    ],
     allow_credentials=True,
-    allow_methods=["*"],  # This enables OPTIONS requests
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+    expose_headers=["*"]  # Expose all headers
 )
 
 
@@ -54,6 +61,10 @@ class SignUpRequest(BaseModel):
     email: str
     user_name: str
     password: str
+
+
+class FileDeleteRequest(BaseModel):
+    file_path: str  # Expect JSON with file_path    
 
 def get_db():
     db = SessionLocal()
@@ -168,6 +179,22 @@ async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends
 
     return {"message": "File encrypted & indexed successfully", "filename": file.filename}
 
+@app.get("/files/")
+async def list_files(user_id: int = Depends(get_current_user_info), db: Session = Depends(get_db)):
+    try:
+        files = db.execute(
+            text("SELECT file_path FROM encrypted_files WHERE user_id = :user_id"),
+            {"user_id": user_id}
+        ).fetchall()
+        
+        return {"files": [file[0] for file in files]}
+    except Exception as e:
+        # Improved error handling
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error retrieving files: {str(e)}"
+        )
+
 
 @app.get("/search/")
 async def search_keyword(keyword: str = Query(...),user_id :int = Depends(get_current_user_info),db : Session= Depends(get_db)):
@@ -177,7 +204,7 @@ async def search_keyword(keyword: str = Query(...),user_id :int = Depends(get_cu
     print(encrypt_keyword)
     matching_files = db.execute(
         text("SELECT file_id FROM encrypted_index WHERE keyword = :keyword"),
-        {"keyword": keyword}
+        {"keyword": encrypt_keyword}
     ).fetchall()
 
     if not matching_files:
@@ -199,4 +226,44 @@ async def search_keyword(keyword: str = Query(...),user_id :int = Depends(get_cu
 
     return{"file_found":list(file_paths)} 
 
+@app.delete("/delete/")
+async def delete_file(request: FileDeleteRequest, db: Session = Depends(get_db)):
+    file_path = request.file_path
+    base_dir = "encrypted_files/"
+    
+    if not file_path.startswith(base_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Find the file entry first
+    file_entry = db.query(EncryptedFile).filter(EncryptedFile.file_path == file_path).first()
+    
+    if not file_entry:
+        raise HTTPException(status_code=404, detail="File not found in database")
+    
+    # Remove physical file
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    else:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    # Explicitly handle related EncryptedIndex entries
+    db.query(EncryptedIndex).filter(EncryptedIndex.file_id == file_entry.id).delete(synchronize_session=False)
+    
+    # Then delete the file entry
+    db.delete(file_entry)
+    db.commit()
+
+    return {"message": "File deleted successfully"}
+
+
+@app.get("/download/{file_path:path}")
+async def download_file(file_path: str = Path(...)):
+    print(file_path)
+    try:
+        if os.path.exists(file_path):
+            return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
