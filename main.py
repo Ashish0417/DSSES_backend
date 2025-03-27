@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, Path,UploadFile,Query,Depends, HTTPException, status,Body
 import os
+import tempfile
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer ,OAuth2PasswordRequestForm
 from passlib.context import CryptContext
@@ -151,9 +152,10 @@ async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends
     # encrypted_docs.append(encrypted_text)
 
     # Store the encrypted file
-    encrypted_filename = f"encrypted_{file.filename}"
+    user = db.query(User).filter(User.id == user_id).first()
+    encrypted_filename = f"{user.username}_{file.filename}"
     encrypted_file_path = os.path.join(ENCRYPTED_DIR, encrypted_filename)
-
+ 
     with open(encrypted_file_path, "w", encoding="utf-8") as enc_file:
         enc_file.write(encrypted_text)
 
@@ -170,12 +172,18 @@ async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends
     words = tokenize_document(plain_text)
     encrypted_words = encrypt_keywords(words, key)
 
-    for e_word in encrypted_words:
+    if encrypted_words:
+        keyword_values = [{"keyword": e_word, "file_id": file_id} for e_word in encrypted_words]
+
         db.execute(
-            text("INSERT INTO encrypted_index (keyword, file_id) VALUES (:keyword, :file_id)"),
-            {"keyword": e_word, "file_id" : file_id}
+            text("""
+                INSERT INTO encrypted_index (keyword, file_id) 
+                VALUES (:keyword, :file_id)
+            """),
+            keyword_values
         )
-        db.commit()
+    
+    db.commit()
 
     return {"message": "File encrypted & indexed successfully", "filename": file.filename}
 
@@ -257,11 +265,22 @@ async def delete_file(request: FileDeleteRequest, db: Session = Depends(get_db))
 
 
 @app.get("/download/{file_path:path}")
-async def download_file(file_path: str = Path(...)):
+async def download_file(file_path: str = Path(...),user_id :int = Depends(get_current_user_info),db: Session = Depends(get_db)):
     print(file_path)
     try:
         if os.path.exists(file_path):
-            return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
+            decrypted_text =''
+            with open(file_path, "rb") as f:
+                encrypted_data = f.read()
+                key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
+                key = bytes.fromhex(key_hex) 
+                decrypted_text = des_decrypt(encrypted_data,key)
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as temp_file:
+                temp_file_path = temp_file.name
+                temp_file.write(decrypted_text.encode("utf-8"))  
+
+            return FileResponse(temp_file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
         else:
             raise HTTPException(status_code=404, detail="File not found")
     except Exception as e:
