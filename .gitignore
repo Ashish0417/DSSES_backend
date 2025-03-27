@@ -1,4 +1,3 @@
 /venv
 /docker-compose.yml
-/Dockerfile
 /init.sql
