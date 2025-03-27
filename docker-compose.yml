@@ -1,5 +1,4 @@
 version: "3.8"
-
 services:
   fastapi:
     build: .
@@ -10,28 +9,30 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      - DATABASE_URL=mysql+pymysql://root:yourpassword@mysql_db:3306/dsse_db
+      - DATABASE_URL=mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3307/${MYSQL_DATABASE}
     networks:
       - mynetwork
+    restart: always
 
   mysql:
-    image: mysql:8
+    image: mysql:latest
     container_name: mysql_db
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: yourpassword
-      MYSQL_DATABASE: dsse_db
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_AUTHENTICATION_PLUGIN=mysql_native_password
     ports:
-      - "3307:3306"  # Exposing MySQL on port 3307 to avoid conflicts
+      - "3307:3306"  # Map container's 3306 to host's 3307
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
       - mynetwork
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
 
 volumes:
   mysql_data:

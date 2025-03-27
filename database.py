@@ -1,7 +1,9 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+import os
 
-DATABASE_URL = "mysql+pymysql://root:yourpassword@mysql:3306/dsse_db"
+
+DATABASE_URL = f"mysql+pymysql://root:LVwaVsgrJwWkbFWyPtpnmmVnusminiYc@shuttle.proxy.rlwy.net:39883/railway"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autoflush=False, autocommit=False, bind=engine)
