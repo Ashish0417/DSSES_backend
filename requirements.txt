@@ -18,6 +18,7 @@ pycparser==2.22
 pycryptodome==3.22.0
 pydantic==2.10.6
 pydantic_core==2.27.2
+PyMySQL==1.1.1
 python-jose==3.4.0
 rsa==4.9
 six==1.17.0
