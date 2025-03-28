@@ -12,7 +12,7 @@ import time
 from sqlalchemy.orm import Session
 from database import EncryptedFile, EncryptedIndex, SessionLocal, User
 from week1_dsse_txt import des_encrypt, des_decrypt, generate_key, tokenize_document, encrypt_keywords, build_index, generate_search_token
-
+import fitz 
 
 app = FastAPI() 
 
@@ -27,7 +27,8 @@ app.add_middleware(
         "http://localhost:5173",  # Vite default port
         "http://127.0.0.1:5173",  # Alternative localhost
         "http://localhost:3000",  # Common React port
-        "http://127.0.0.1:3000"   # Alternative localhost
+        "http://127.0.0.1:3000",   # Alternative localhost
+        "https://beamish-pastelito-d62e1b.netlify.app/"
     ],
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods
@@ -145,13 +146,29 @@ async def upload_etxt_file(file: UploadFile = File(...)):
 @app.post("/upload-and-encrypt/")
 async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends(get_current_user_info),db: Session = Depends(get_db)):
     file_content = await file.read()
-    plain_text = file_content.decode("utf-8")
+    file_extension = file.filename.split('.')[-1].lower()
+
     key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
     key = bytes.fromhex(key_hex) 
+
+    if file_extension == "txt":
+        plain_text = file_content.decode("utf-8")
+    elif file_extension == "pdf":
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_pdf.write(file_content)
+            temp_pdf_path = temp_pdf.name
+        
+        pdf_doc = fitz.open(temp_pdf_path)
+        plain_text = "\n".join([page.get_text("text") for page in pdf_doc])
+    else:
+        raise HTTPException(status_code=404, detail="Unsupported file type. Only .txt and .pdf are allowed.")
+
+
+
     encrypted_text = des_encrypt(plain_text, key)
     # encrypted_docs.append(encrypted_text)
 
-    # Store the encrypted file
+
     user = db.query(User).filter(User.id == user_id).first()
     encrypted_filename = f"{user.username}_{file.filename}"
     encrypted_file_path = os.path.join(ENCRYPTED_DIR, encrypted_filename)
@@ -268,21 +285,31 @@ async def delete_file(request: FileDeleteRequest, db: Session = Depends(get_db))
 async def download_file(file_path: str = Path(...),user_id :int = Depends(get_current_user_info),db: Session = Depends(get_db)):
     print(file_path)
     try:
-        if os.path.exists(file_path):
-            decrypted_text =''
-            with open(file_path, "rb") as f:
-                encrypted_data = f.read()
-                key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
-                key = bytes.fromhex(key_hex) 
-                decrypted_text = des_decrypt(encrypted_data,key)
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as temp_file:
-                temp_file_path = temp_file.name
-                temp_file.write(decrypted_text.encode("utf-8"))  
-
-            return FileResponse(temp_file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
-        else:
+        if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="File not found")
+
+        key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"), {"user_id": user_id}).fetchone()[0]
+        key = bytes.fromhex(key_hex)
+
+        with open(file_path, "r", encoding="utf-8") as enc_file:
+            encrypted_data = enc_file.read()
+
+        decrypted_text = des_decrypt(encrypted_data, key)
+
+        decrypted_file_extension = "txt" if file_path.endswith(".txt") else "pdf"
+        temp_suffix = f".{decrypted_file_extension}"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=temp_suffix) as temp_file:
+            temp_file_path = temp_file.name
+            if decrypted_file_extension == "txt":
+                temp_file.write(decrypted_text.encode("utf-8"))
+            else:  # Convert decrypted text back to a PDF
+                pdf_doc = fitz.open()
+                page = pdf_doc.new_page()
+                page.insert_text((50, 50), decrypted_text)
+                pdf_doc.save(temp_file_path)
+
+        return FileResponse(temp_file_path, filename=os.path.basename(file_path), media_type="application/octet-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
