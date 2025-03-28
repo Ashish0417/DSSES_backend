@@ -28,7 +28,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",  # Alternative localhost
         "http://localhost:3000",  # Common React port
         "http://127.0.0.1:3000",   # Alternative localhost
-        "https://beamish-pastelito-d62e1b.netlify.app/"
+        "https://beamish-pastelito-d62e1b.netlify.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods
