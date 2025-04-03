@@ -13,6 +13,11 @@ from sqlalchemy.orm import Session
 from database import EncryptedFile, EncryptedIndex, SessionLocal, User
 from week1_dsse_txt import des_encrypt, des_decrypt, generate_key, tokenize_document, encrypt_keywords, build_index, generate_search_token
 import fitz 
+import speech_recognition as sr
+from moviepy import AudioFileClip
+import mp4_enc
+from io import BytesIO
+from fastapi.responses import StreamingResponse
 
 app = FastAPI() 
 
@@ -24,16 +29,16 @@ from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Vite default port
-        "http://127.0.0.1:5173",  # Alternative localhost
-        "http://localhost:3000",  # Common React port
-        "http://127.0.0.1:3000",   # Alternative localhost
+        "http://localhost:5173",  
+        "http://127.0.0.1:5173",  
+        "http://localhost:3000",  
+        "http://127.0.0.1:3000", 
         "https://beamish-pastelito-d62e1b.netlify.app"
     ],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
-    expose_headers=["*"]  # Expose all headers
+    allow_methods=["*"],  
+    allow_headers=["*"],  
+    expose_headers=["*"]  
 )
 
 
@@ -86,6 +91,64 @@ def create_access_token(data:dict, expires_delta: timedelta):
     expire = datetime.utcnow()+expires_delta
     to_encode.update({"exp":expire})
     return jwt.encode(to_encode,SECRET_KEY, algorithm=ALGORITHM)
+
+def extract_transcript(video_path: str) -> str:
+    try:
+        recognizer = sr.Recognizer()
+        
+        # Create a temporary file for the audio
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+            audio_path = temp_audio.name
+        
+        # Extract audio from video without the verbose parameter
+        try:
+            audio_clip = AudioFileClip(video_path)
+            audio_clip.write_audiofile(audio_path)  # Remove verbose and logger parameters
+            audio_clip.close()
+        except Exception as e:
+            raise Exception(f"Failed to extract audio from video: {str(e)}")
+        
+        # Transcribe audio
+        try:
+            with sr.AudioFile(audio_path) as source:
+                audio_data = recognizer.record(source)
+                transcript = recognizer.recognize_google(audio_data)
+        except sr.UnknownValueError:
+            transcript = ""  # No speech detected
+        except sr.RequestError as e:
+            raise Exception(f"Speech recognition service error: {str(e)}")
+        finally:
+            # Clean up temp audio file
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+        
+        return transcript if transcript else "No speech detected in video"
+        
+    except Exception as e:
+        raise Exception(f"Transcription failed: {str(e)}")
+
+def store_encrypted_metadata(db: Session, user_id: int, filename: str, file_path: str) -> int:
+    db.execute(
+        text("INSERT INTO encrypted_files (user_id, filename, file_path) VALUES (:user_id, :filename, :file_path)"),
+        {"user_id": user_id, "filename": filename, "file_path": file_path}
+    )
+    db.commit()
+    return db.execute(text("SELECT LAST_INSERT_ID()")).fetchone()[0]
+
+def store_encrypted_index(db: Session, file_id: int, encrypted_words: list):
+    if encrypted_words:
+        keyword_values = [{"keyword": e_word, "file_id": file_id} for e_word in encrypted_words]
+        db.execute(
+            text("INSERT INTO encrypted_index (keyword, file_id) VALUES (:keyword, :file_id)"),
+            keyword_values
+        )
+        db.commit()
+
+
+def delete_temp_file(file_path: str):
+    """Deletes the temporary file after response is sent."""
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 @app.get("/")
 def read_root():
@@ -144,65 +207,86 @@ async def upload_etxt_file(file: UploadFile = File(...)):
     return {"filename": file.filename , "message":"File Uploaded sucessfully"}
 
 @app.post("/upload-and-encrypt/")
-async def upload_and_encrypt(file: UploadFile = File(...),user_id :int = Depends(get_current_user_info),db: Session = Depends(get_db)):
-    file_content = await file.read()
+async def upload_and_encrypt(file: UploadFile = File(...), user_id: int = Depends(get_current_user_info), db: Session = Depends(get_db)):
+    # Validate file extension
     file_extension = file.filename.split('.')[-1].lower()
-
-    key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"),{"user_id":user_id}).fetchone()[0]
-    key = bytes.fromhex(key_hex) 
-
-    if file_extension == "txt":
-        plain_text = file_content.decode("utf-8")
-    elif file_extension == "pdf":
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-            temp_pdf.write(file_content)
-            temp_pdf_path = temp_pdf.name
-        
-        pdf_doc = fitz.open(temp_pdf_path)
-        plain_text = "\n".join([page.get_text("text") for page in pdf_doc])
-    else:
-        raise HTTPException(status_code=404, detail="Unsupported file type. Only .txt and .pdf are allowed.")
-
-
-
-    encrypted_text = des_encrypt(plain_text, key)
-    # encrypted_docs.append(encrypted_text)
-
-
-    user = db.query(User).filter(User.id == user_id).first()
-    encrypted_filename = f"{user.username}_{file.filename}"
-    encrypted_file_path = os.path.join(ENCRYPTED_DIR, encrypted_filename)
- 
-    with open(encrypted_file_path, "w", encoding="utf-8") as enc_file:
-        enc_file.write(encrypted_text)
-
-    db.execute(
-        text("INSERT INTO encrypted_files (user_id, filename, file_path) VALUES (:user_id, :filename, :file_path)"),
-        {"user_id":user_id,"filename":file.filename, "file_path":encrypted_file_path}
-    )
-    db.commit()
-
-    file_id = db.execute(text("SELECT LAST_INSERT_ID()")).fetchone()[0]
-
-
-    # Index the file for search
-    words = tokenize_document(plain_text)
-    encrypted_words = encrypt_keywords(words, key)
-
-    if encrypted_words:
-        keyword_values = [{"keyword": e_word, "file_id": file_id} for e_word in encrypted_words]
-
-        db.execute(
-            text("""
-                INSERT INTO encrypted_index (keyword, file_id) 
-                VALUES (:keyword, :file_id)
-            """),
-            keyword_values
+    if file_extension not in ["txt", "pdf", "mp4"]:
+        raise HTTPException(
+            status_code=400, 
+            detail="Unsupported file type. Only .txt, .pdf, and .mp4 are allowed."
         )
     
-    db.commit()
+    key_hex = db.execute(text("SELECT shared_key FROM users WHERE id = :user_id"), {"user_id": user_id}).fetchone()[0]
+    key = bytes.fromhex(key_hex)
+    user = db.query(User).filter(User.id == user_id).first()
+    encrypted_file_path = os.path.join(ENCRYPTED_DIR, f"{user.username}_{file.filename}")
+    # Handle MP4 files differently
 
-    return {"message": "File encrypted & indexed successfully", "filename": file.filename}
+    # encrypted_filename = f"{user.username}_{file.filename}"
+    if file_extension == "mp4":
+        try:
+            # Save the MP4 file first
+            file_content = await file.read()
+            with tempfile.NamedTemporaryFile(delete=False) as temp_video:
+                temp_video.write(file_content)
+                temp_video_path = temp_video.name
+            
+            mp4_enc.des_encrypt_file(temp_video_path, encrypted_file_path, key)
+            
+            
+            file_id = store_encrypted_metadata(db, user_id, file.filename, encrypted_file_path)
+            try:
+                # Try to extract transcript - but continue even if this fails
+                transcript = extract_transcript(temp_video_path)
+                print(transcript)
+                words = tokenize_document(transcript)
+                encrypted_words = encrypt_keywords(words, key)
+                store_encrypted_index(db, file_id, encrypted_words)
+                os.remove(temp_video_path)  # Remove temporary file
+                return {"message": "MP4 uploaded, transcript processed, and keywords indexed.", "filename": file.filename}
+            
+            except Exception as transcript_error:
+                # If transcription fails, still keep the file but log the error
+                print(f"Transcription error: {str(transcript_error)}")
+                # Store the file with empty keywords
+                os.remove(temp_video_path)  # Remove temporary file
+                return {"message": "MP4 uploaded successfully, but transcript extraction failed.", "filename": file.filename}
+        
+        except Exception as e:
+            # Handle any other errors
+            raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
+    
+    else:
+        # Handle TXT and PDF files as before
+        try:
+            file_content = await file.read()
+            if file_extension == "txt":
+                plain_text = file_content.decode("utf-8")
+            elif file_extension == "pdf":
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+                    temp_pdf.write(file_content)
+                    temp_pdf_path = temp_pdf.name
+                
+                pdf_doc = fitz.open(temp_pdf_path)
+                plain_text = "\n".join([page.get_text("text") for page in pdf_doc])
+                pdf_doc.close()
+                os.unlink(temp_pdf_path)  # Clean up temp file
+            
+            encrypted_text = des_encrypt(plain_text, key)
+            encrypted_file_path = os.path.join(ENCRYPTED_DIR, f"{user.username}_{file.filename}")
+            
+            with open(encrypted_file_path, "w", encoding="utf-8") as enc_file:
+                enc_file.write(encrypted_text)
+            
+            file_id = store_encrypted_metadata(db, user_id, file.filename, encrypted_file_path)
+            words = tokenize_document(plain_text)
+            encrypted_words = encrypt_keywords(words, key)
+            store_encrypted_index(db, file_id, encrypted_words)
+            
+            return {"message": "File encrypted & indexed successfully", "filename": file.filename}
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 @app.get("/files/")
 async def list_files(user_id: int = Depends(get_current_user_info), db: Session = Depends(get_db)):
@@ -287,9 +371,33 @@ async def download_file(file_path: str = Path(...),user_id :int = Depends(get_cu
     try:
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="File not found")
+        
+
+        file_extension = file_path.split(".")[-1].lower()
 
         key_hex = db.execute(text("SELECT shared_key FROM users WHERE id =:user_id"), {"user_id": user_id}).fetchone()[0]
         key = bytes.fromhex(key_hex)
+
+        if file_extension == "mp4":
+            # Decrypt video file into memory
+            decrypted_video = BytesIO()
+            
+            # Create a temporary file to hold decrypted video
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
+                temp_file_path = temp_file.name
+
+            mp4_enc.des_decrypt_file(file_path, temp_file_path, key)  # Decrypt the file
+            
+            # Read the decrypted file into memory
+            with open(temp_file_path, "rb") as temp_file:
+                decrypted_video.write(temp_file.read())
+
+            decrypted_video.seek(0)  # Reset pointer
+            os.remove(temp_file_path)  # Clean up temporary file after reading
+
+            return StreamingResponse(decrypted_video, media_type="video/mp4", headers={
+                "Content-Disposition": f"attachment; filename={os.path.basename(file_path)}"
+            })
 
         with open(file_path, "r", encoding="utf-8") as enc_file:
             encrypted_data = enc_file.read()
